@@ -1,0 +1,1935 @@
+---
+title: "R Code For The GLM Project: Predicting The Number of Hospitalizations"
+author: Gabriel Vasquez, Weitong Tie, Rachel Tsai, and Justin Henriquez
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: yes
+  html_document:
+    toc: yes
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+suppressWarnings(suppressMessages(library(gridExtra)))
+suppressWarnings(suppressMessages(library(GGally)))
+suppressWarnings(suppressMessages(library(tidyverse)))
+suppressWarnings(suppressMessages(library(MASS)))
+suppressWarnings(suppressMessages(library(car)))
+library(dplyr)
+library(ggplot2)
+suppressMessages(library(corrplot))
+suppressMessages(library(AER))
+library(interactions)
+library(aod)
+```
+
+# Introduction
+Our team selected the ***Hospitalization*** data set for the project assignment. This data set is provided by the National Health and Nutrition Examination Survey (NHANES) and is focused on factors related to the frequency of hospitalizations from a sample of 300 patients.
+
+***Question***: Which factors in the data set can we use to build a generalized linear model for predicting a subject’s frequency of hospitalizations?
+
+# Data Description
+```{r echo=FALSE}
+df <- read.csv("Hospitalizations.csv")
+```
+
+
+```{r}
+summary(df)
+dim(df)
+sapply(df,class)
+```
+
+```{r echo=FALSE}
+# Information for the data description tables
+stats <- function(x){
+  list(IQR = IQR(x),
+       Lower_Bound = quantile(x, 0.25) - 1.5*IQR(x),
+       Upper_Bound = quantile(x, 0.75) + 1.5*IQR(x))
+}
+
+#Age IQR, LOWER BOUND, AND UPPER BOUND
+age_stats <- stats(df$Age)
+
+#BMI IQR, LOWER BOUND, AND UPPER BOUND
+bmi_stats <- stats(df$BMI)
+
+#Cholesterol IQR, LOWER BOUND, AND UPPER BOUND
+chol_stats <- stats(df$Cholesterol)
+
+#Hospitalizations IQR, LOWER BOUND, AND UPPER BOUND
+hosp_stats <- stats(df$Num_Hospitalizations)
+
+# Display IQR, LOWER BOUND, AND UPPER BOUND
+# age_stats
+# bmi_stats
+# chol_stats
+# hosp_stats
+
+# Frequency Tables
+table(df$Gender)
+table(df$Smoker)
+table(df$Diabetes)
+table(df$Physical)
+# 
+# # Relative frequencies (proportions)
+prop.table(table(df$Gender))
+prop.table(table(df$Smoker))
+prop.table(table(df$Diabetes))
+prop.table(table(df$Physical))
+
+# Modes
+mode_value <- function(x){
+  names(which.max(table(x)))
+}
+# mode_value(df$Age)
+mode_value(df$BMI)
+mode_value(df$Cholesterol)
+mode_value(df$Num_Hospitalizations)
+
+# Variances
+var(df$Num_Hospitalizations)
+var(df$Age)
+var(df$BMI)
+var(df$Cholesterol)
+```
+
+```{r}
+histogram <- function(df,feature){
+  if(feature == "Num_Hospitalizations" || feature == "Hospitalizations"){
+    ggplot(df, aes(x = Num_Hospitalizations)) +
+    geom_histogram(fill = "lightblue", color = "black") +
+    labs(title = "Hospitalizations Distribution",
+         x = "Number of Hospitalizations",
+         y = "Frequency")
+  }else if(feature == "Age"){
+    return(ggplot(df, aes(x = Age)) +
+             geom_histogram(binwidth = 5, fill = "lightblue", color = "black") +
+              labs(title = "Age Distribution",
+                   x = "Age",
+                   y = "Frequency"))
+  }else if(feature == "BMI"){
+    return(ggplot(df, aes(x = BMI)) +
+             geom_histogram(fill = "lightblue", color = "black") +
+             labs(title = "BMI Distribution",
+                  x = "BMI",
+                  y = "Frequency"))
+  }else if(feature == "Cholesterol"){
+    return(ggplot(df, aes(x = Cholesterol)) +
+             geom_histogram(fill = "lightblue", color = "black") +
+             labs(title = "Cholesterol Distribution",
+                  x = "Cholesterol",
+                  y = "Frequency"))
+  }else{ return(print("Error in Boxplots() funciton")) }
+}
+```
+
+```{r}
+# Distributions of Continuous Variables (Age, BMI, Cholesterol, and Hospitalizations)
+hist_Age <- histogram(df,"Age")
+hist_BMI <- histogram(df,"BMI")
+hist_Cholesterol <- histogram(df,"Cholesterol")
+
+grid.arrange(hist_Age, hist_BMI, hist_Cholesterol, ncol = 2, nrow = 2)
+```
+
+```{r}
+hist_Hospitalizations <- histogram(df,"Num_Hospitalizations")
+hist_Hospitalizations
+```
+The response variable (Hospitalizations) is very skewed right. Since it also also a discrete count variable type, we consider the response to follow either a ***Negative Binomial (nb)*** or a ***Poisson (pois)*** distribution. WE investigate this in the ***Target Variable's Distribution*** section.
+## Data Manipulation
+```{r}
+# Check for any missing or NaN elements
+sum(is.na(df))
+```
+
+```{r}
+# Rename variables
+df <- rename(df, Hospitalizations = Num_Hospitalizations)
+df <- rename(df, Physical = Physical_Activity)
+df <- rename(df, Diabetes = Diabetes_Status)
+
+# Factor variables 
+df$Gender <- ifelse(df$Gender == "Male", 1, 0) #Encode Gender
+df$Gender <- factor(df$Gender, levels = c(0, 1), labels = c("Female", "Male"))
+df$Smoker <- factor(df$Smoker, levels = c(0, 1), labels = c("No", "Yes"))
+df$Physical <- factor(df$Physical, levels = c(0, 1), labels = c("No", "Yes"))
+df$Diabetes <- factor(df$Diabetes, levels = c(0, 1), labels = c("No", "Yes"))
+```
+We've renamed the following variables: <br>
+- "Num_Hospitalizations" is now Hospitalizations <br>
+- "Physical_Activity" is now Physical  <br>
+- "Diabetes_Status" is now Diabetes <br>
+
+Factor encoded the following variables:  <br>
+- Gender = [Female = 0, Male = 1] <br>
+- Smoker = [No = 0, Yes = 1] <br>
+- Physical = [No = 0, Yes = 1] <br>
+- Diabetes = [No = 0, Yes = 1] <br>
+
+```{r}
+# New Categorical variable created "BMI_Cat"
+df <- df %>%
+  mutate(BMI_Cat = case_when(
+    BMI < 18.5 ~ "Underweight",
+    BMI >= 18.5 & BMI < 25 ~ "Healthy",
+    BMI >= 25 & BMI < 30 ~ "Overweight",
+    BMI >= 30 & BMI < 35 ~ "Mild Obesity",
+    BMI >= 35 & BMI < 40 ~ "Moderate Obesity",
+    BMI >= 40 ~ "Severe Obesity"
+  ))
+
+df$BMI_Cat <- factor(df$BMI_Cat, 
+                     levels = c("Underweight", "Healthy", "Overweight", 
+                                "Mild Obesity", "Moderate Obesity", 
+                                "Severe Obesity"))
+# The correlation matrix shows BMI to have very-little-to-no relation with the target variable, but NIH reports that people with obesity, or are overweight, have a higher risk of getting diabetes. So, we can check the relation between this "BMI_Cat" variable and Diabetes, and with Hospitalizations.
+```
+
+## Correlation Matrix
+```{r}
+selected_data <- dplyr::select(df, Age, BMI, Cholesterol, Hospitalizations)
+
+# Plot the correlation matrix
+ggpairs(selected_data, title = "Correlation Matrix Between Age, BMI, Cholesterol, and Hospitalizations")
+```
+
+```{r}
+cor_matrix <- cor(selected_data)
+cor_plot <- corrplot(cor_matrix, method = "circle")
+```
+
+## Age vs Hospitalization vs Smoker
+```{r}
+ahs_plot1 <- ggplot(df, aes(x = Age, y = Hospitalizations, color = Smoker)) +
+  geom_point(size = 3) +
+  labs(title = "Age vs Hospitalization vs Smoker",
+       x = "Age",
+       y = "Hospitalization Freqs",
+       color = "Smoker") +                    
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5))
+
+ahs_plot2 <-   ggplot(df, aes(x = Smoker, y = Hospitalizations, fill = Smoker)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Hospitalizations vs Smoker",
+       x = "Smoker",
+       y = "Hospitalization Frequency")
+
+ahs_plot3 <- ggplot(df, aes(x = Age, fill = Smoker)) +
+  geom_histogram(binwidth = 5, color = "black") +
+  labs(title = "Age vs Smoker",
+       x = "Age",
+       y = "Frequency",
+       fill = "Smoker") +
+  theme_minimal()
+
+ahs_plot4 <- ggplot(df, aes(x = Smoker, y = Age, fill = Smoker)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Age vs Smoker",
+       x = "Age",
+       y = "Age Frequency")
+
+grid.arrange(ahs_plot1, ahs_plot2, ahs_plot3, ahs_plot4, ncol = 2)
+```
+
+## Age vs Hospitalization vs Diabetes
+```{r}
+ahd_plot1 <- ggplot(df, aes(x = Age, y = Hospitalizations, color = Diabetes)) +
+  geom_point(size = 3) +
+  labs(title = "Age vs Hospitalization vs Diabetes",
+       x = "Age",
+       y = "Hospitalization Freqs",
+       color = "Diabetes") +                    
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5))
+
+ahd_plot2 <-   ggplot(df, aes(x = Diabetes, y = Hospitalizations, fill = Diabetes)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Hospitalizations vs Diabetes",
+       x = "Diabetes",
+       y = "Hospitalization Frequency")
+
+ahd_plot3 <- ggplot(df, aes(x = Age, fill = Diabetes)) +
+  geom_histogram(binwidth = 5, color = "black") +
+  labs(title = "Age vs Diabetes",
+       x = "Age",
+       y = "Frequency",
+       fill = "Diabetes") +
+  theme_minimal()
+
+ahd_plot4 <- ggplot(df, aes(x = Diabetes, y = Age, fill = Diabetes)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Age vs Diabetes",
+       x = "Age",
+       y = "Age Frequency")
+
+grid.arrange(ahd_plot1, ahd_plot2, ahd_plot3 , ahd_plot4, ncol = 2)
+```
+
+## Cholesterol vs Hospitalizations vs Diabetes
+```{r}
+chd_plot1 <- ggplot(df, aes(x = Cholesterol, y = Hospitalizations, color = Diabetes)) +
+  geom_point(size = 3) +
+  labs(title = "Cholesterol vs Hospitalization vs Diabetes",
+       x = "Cholesterol",
+       y = "Hospitalization Freqs",
+       color = "Diabetes") +                    
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5))
+
+chd_plot2 <-   ggplot(df, aes(x = Diabetes, y = Hospitalizations, fill = Diabetes)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Hospitalizations vs Diabetes",
+       x = "Diabetes",
+       y = "Hospitalization Frequency")
+
+chd_plot3 <- ggplot(df, aes(x = Cholesterol, fill = Diabetes)) +
+  geom_histogram(binwidth = 5, color = "black") +
+  labs(title = "Cholesterol vs Diabetes",
+       x = "Cholesterol",
+       y = "Frequency",
+       fill = "Diabetes") +
+  theme_minimal()
+
+chd_plot4 <- ggplot(df, aes(x = Diabetes, y = Cholesterol, fill = Diabetes)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Cholesterol vs Diabetes",
+       x = "Cholesterol",
+       y = "Cholesterol Frequency")
+
+grid.arrange(chd_plot1, chd_plot2, chd_plot3, chd_plot4, ncol = 2)
+```
+<br>
+***Findings*** There is a noticeable relationship between cholesterol levels, hospitalization rates, 
+## BMI Categories vs Hospitlizations
+```{r}
+BMI_Hosp_Boxplot <- ggplot(df, aes(x = BMI_Cat, y = Hospitalizations, fill = BMI_Cat)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Underweight" = "cyan", 
+                               "Healthy" = "green", 
+                               "Overweight" = "orange", 
+                               "Mild Obesity" = "pink", 
+                               "Moderate Obesity" = "darkred", 
+                               "Severe Obesity" = "grey")) + #No subject is severely obese.
+  labs(title = "Hospitalizations vs BMI Categories",
+       x = "BMI Categories",
+       y = "Hospitalization Frequency")
+BMI_Hosp_Boxplot
+```
+
+## BMI Categories vs Diabetes
+```{r}
+df_prop <- df %>%
+  group_by(BMI_Cat, Diabetes) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(BMI_Cat) %>%
+  mutate(proportion = count / sum(count))  # Compute proportion within each BMI category
+
+# Create the proportional stacked bar chart with labels
+ggplot(df_prop, aes(x = BMI_Cat, y = proportion, fill = Diabetes)) +
+  geom_bar(stat = "identity", position = "fill") +  # Creates a proportional stacked bar chart
+  geom_text(aes(label = sprintf("%.2f%%", proportion * 100)), 
+            position = position_stack(vjust = 0.5), size = 5, color = "white") +  # Add proportion labels
+  scale_y_continuous(labels = scales::percent) +  # Format y-axis as percentages
+  labs(y = "Proportion", 
+       title = "Proportion of Diabetes in Each BMI Category", 
+       x = "BMI Categories", 
+       fill = "Diabetes") +
+  theme_minimal()
+```
+
+```{r}
+# ANOVA TEST (Hospitalizations vs BMI_Cat)
+summary(aov(Hospitalizations ~ BMI_Cat, data = df))
+# H0: BMI Categories have no significance to the number of Hospitalizations
+# Ha: BMI Categories have significance
+```
+The (p-value=0.182) > ($\alpha$=0.05) $\rightarrow$ we fail to reject $H_{0}$ and conclude that there is no statistically significant difference in the average number of hospitalizations across the different BMI categories. The BMI category we created does not appear to be a meaningful predictor of hospitalization frequency.
+```{r}
+# Chi-Square Test (BMI_Cat vs Diabetes)
+bmi_diabetes_table <- table(df$BMI_Cat, df$Diabetes)
+suppressWarnings(chi_test <- chisq.test(bmi_diabetes_table))
+print(chi_test)
+# H0: BMI Categories and Diabetes are independent, no significant association
+# Ha: BMI Categories and Diabetes have a significant association
+``` 
+
+```{r}
+bmi_diabetes_table
+```
+
+```{r}
+chi_test$expected
+```
+
+There are two main reasons why this chi-square test is not computing a p-value: 1) The Severe Obesity level is empty. 2) The Underweight Diabetics (which is only 2 personnel) has too few number of individuals to satisfy the Chi-Square. <br>
+
+This doesn't really matter anyway. The BMI_Cat is proven to be insignificant, therefore, we exclude it from our models.
+
+
+# Linearity Check
+## Log-Response Variable With Continuous Variables
+```{r}
+log_hospitalizations <- log(df$Hospitalizations)
+
+# Age vs Log of Hospitalization
+scatterplot_1 <- ggplot(df, aes(x = Age, y = log_hospitalizations)) +
+  geom_point(size = 2) +
+  geom_smooth(aes(Age, log_hospitalizations), method = "loess", color = "blue", span = 0.75) +
+  labs(title = "Age vs Log of Hospitalization",
+       x = "Age",
+       y = "Log of Hospitalization") +                    
+  theme_minimal() 
+
+# Cholesterol vs Log of Hospitalization
+scatterplot_2 <- ggplot(df, aes(x = Cholesterol, y = log_hospitalizations)) +
+  geom_point(size = 2) +
+  geom_smooth(aes(Cholesterol, log_hospitalizations), method = "loess", color = "blue", span = 0.75) +
+  labs(title = "Cholesterol vs Log of Hospitalization",
+       x = "Cholesterol",
+       y = "Log of Hospitalization") +                    
+  theme_minimal() 
+
+# BMI vs Log of Hospitalization
+scatterplot_3 <- ggplot(df, aes(x = BMI, y = log_hospitalizations)) +
+  geom_point(size = 2) +
+  geom_smooth(aes(BMI, log_hospitalizations), method = "loess", color = "blue", span = 0.75) +
+  labs(title = "BMI vs Log of Hospitalization",
+       x = "BMI",
+       y = "Log of Hospitalization") +                    
+  theme_minimal() 
+
+grid.arrange(scatterplot_1, scatterplot_2, scatterplot_3, ncol = 2)
+```
+
+## Log-Response Variable With Interactions
+```{r}
+# Log of Hospitalizations vs Age and Smoker
+model_structure1 <- ggplot(df, aes(x = Age, y = log_hospitalizations, color = Smoker, shape = Smoker)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE, linetype = "dashed") +
+  labs(title = "Log of Hospitalizations vs Age and Smoker", 
+       x = "Age", 
+       y = "Log of Hospitalizations", 
+       color = "Smoker",
+       shape = "Smoker") +
+  theme_minimal()
+model_structure1
+
+# Log of Hospitalizations vs Age and Diabetes
+model_structure2 <- ggplot(df, aes(x = Age, y = log_hospitalizations, color = Diabetes, shape = Diabetes)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE, linetype = "dashed") +
+  labs(title = "Log of Mean Number of Hospitalizations vs Age and Diabetes", 
+       x = "Age", 
+       y = "Log of Hospitalizations", 
+       color = "Diabetes",
+       shape = "Diabetes") +
+  theme_minimal()
+model_structure2
+
+# Log of Hospitalizations vs Age and Gender
+model_structure3 <- ggplot(df, aes(x = Age, y = log_hospitalizations, color = Gender, shape = Gender)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE, linetype = "dashed") +
+  labs(title = "Log of Mean Number of Hospitalizations vs Age and Gender", 
+       x = "Age", 
+       y = "Log of Mean Number of Hospitalizations", 
+       color = "Gender",
+       shape = "Gender") +
+  theme_minimal()
+model_structure3
+
+# Log of Hospitalizations vs Age and Physical Activity
+model_structure4 <- ggplot(df, aes(x = Age, y = log_hospitalizations, color = Physical, shape = Physical)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE, linetype = "dashed") +
+  labs(title = "Log of Mean Number of Hospitalizations vs Age and Physical", 
+       x = "Age", 
+       y = "Log of Mean Number of Hospitalizations", 
+       color = "Physical",
+       shape = "Physical") +
+  theme_minimal()
+model_structure4
+
+# Log of Hospitalizations vs Age and BMI Categories
+model_structure5 <- ggplot(df, aes(x = Age, y = log_hospitalizations, color = BMI_Cat, shape = Diabetes)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE, linetype = "dashed") +
+  labs(title = "Log of Mean Number of Hospitalizations vs Age and BMI Categories", 
+       x = "Age", 
+       y = "Log of Mean Number of Hospitalizations", 
+       color = "BMI_Cat",
+       shape = "BMI_Cat") +
+  theme_minimal()
+model_structure5
+```
+
+## Variable Selection
+$$
+x_{1} = Age, \ x_{2} = Cholesterol, \ x_{3} = Smoker, \ x_{4} = Diabetes \\\
+\\\
+Hospitalizations(x_{1},x_{2},x_{3},x_{4}) = \beta_{0} + \beta_{1}x_{1} + \beta_{2}x_{2} + \beta_{3}x_{3} + \beta_{4}x_{4}
+$$
+
+# Target Variable's Distribution (Poisson vs Negative Binomial)
+```{r}
+glimpse(df$Hospitalizations)
+```
+The response variable only consisted of positive integers, which can be considered a type of count data.
+
+```{r}
+mean(df$Hospitalizations)
+var(df$Hospitalizations)  #check if variance > mean
+```
+
+```{r}
+# Compare Negative Binomial model vs Poisson model
+nb_model <- glm.nb(Hospitalizations ~ Age +  Cholesterol + Smoker + Diabetes + Physical + BMI + Gender, data = df)
+
+poisson_model <- glm(Hospitalizations ~  Age +  Cholesterol + Smoker + Diabetes + Physical + BMI + Gender, family = poisson, data = df)
+
+AIC(nb_model, poisson_model)
+```
+
+***Note:*** Both AIC (Akaike Information Criterion) and BIC (Bayesian Information Criterion) are model selection criteria. They help decide which model among a set of candidates fits the data best, while also penalizing for complexity (to avoid overfitting). 
+$$
+AIC = 2k - 2\ln(\hat{L}) \\
+BIC = k\ln(n) - 2\ln(\hat{L}) \\
+$$
+where k = number of parameters,n = sample size, $\hat{L}$ = maximum likelihood. BIC is similar to AIC but applies a heavier penalty (first term, $k\ln(n))$ for model complexity because of the $\ln(n)$ term. Among competing models, the model with the Lowest AIC (or Lowest BIC) is preferred. However, for small n, AIC and BIC may give similar results. <br>
+
+Since the Binomial Model's AIC is less than the Poisson Model's AIC (3681.693 < 12152.771), then we confirm Hospitalizations follows a Negative Binomial distribution.
+
+# Model Fitting
+## Baseline Model
+```{r}
+nb_selected_vars <- glm.nb(Hospitalizations ~ Age +  Cholesterol + Smoker + Diabetes, data = df)
+
+summary(nb_selected_vars)
+```
+***Interpretation*** <br>
+- All predictor variables are statistically significant for predicting an individual's number of hospitalizations. A model's coefficient represents the ***log change*** in the expected count of Hospitalizations for every one-unit increase in the coefficient's respected predictor (while holding all other predictors constant).<br> 
+
+- The expected number of hospitalizations a subject has when all predictors are zero is approximately 0.4. We consider this insignificant because an individual can only have an integer as a visit count, not a rational count.
+
+- Since Age's coefficient is 0.0299584, then $e^{0.0299584} \approx 1.03$. This indicates a 3% increase in hospitalizations per additional year of age.
+
+- Since Cholesterol's coefficient is 0.0192426, then $e^{0.0192426} \approx 1.019$. This indicates a 1.9% increase in hospitalizations per one unit increase in cholesterol level.
+
+- Since Smoker:Yes coefficient is 0.3509640, then $e^{0.3509640} \approx 1.42$. This indicates a 42% increase in hospitalizations when a subject is considered a smoker.
+
+- Since Diabetes:Yes coefficient is 0.5439550, then $e^{0.5439550} \approx 1.72$. This indicates a 72% increase in hospitalizations when a subject is considered to have diabetes.
+
+
+### Equidispersion Baseline Model
+```{r}
+pois_selected_vars <- glm(Hospitalizations ~ Age +  Cholesterol + Smoker + Diabetes, data = df, family = poisson)
+summary(pois_selected_vars)
+
+#H0: Dispersion = 1
+#Ha: Dispersion > 1
+
+dispersiontest(pois_selected_vars, trafo = NULL, alternative = c("greater"))
+```
+***dispersiontest()*** tests whether the variance of the data is larger than what the poisson model assumes - $Var(Y) = E|Y|$. In other words, it is testing the Null Hypothesis: "dispersion=1", where its Alternative Hypothesis: "dispersion>1 (Overdispersion)".<br>
+
+In our case, since the dispersion estimate is approximately 146.8, then this means that the dataset's variance is approximately 146.8 times what a Poisson model expects. The fact that the (p-value=$1.753e-11$) < ($\alpha=0.05$) indicates we reject the Null and confirm overdispersion. Therefore, we the Poisson model is not used. We remain with the Negative Binomial model. 
+
+### Linearity
+```{r}
+# Age vs Pearson Residuals
+Age_Plot <- ggplot(df, aes(x = Age, y = residuals(nb_selected_vars, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Age vs. Pearson Residuals", x = "Age", y = "Pearson Residuals") +
+  theme_minimal()
+
+# Cholesterol vs Pearson Residuals
+Cholesterol_Plot <- ggplot(df, aes(x = Cholesterol, y = residuals(nb_selected_vars, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Cholesterol vs. Pearson Residuals", x = "Cholesterol", y = "Pearson Residuals") +
+  theme_minimal()
+
+grid.arrange(Age_Plot, Cholesterol_Plot, ncol = 1)
+```
+From both of the numerical variables, Age and Cholesterol, we can see that plots are relatively linear with no major bumps that could be of concern to the linearity assumption. Therefore, we consider the linearity assumption is satisfied. 
+
+
+**Given the NA coefficients, collinearity might exists**
+
+### Check VIF
+```{r}
+alias(nb_model)
+```
+
+**The presence of aliased coefficients in the model suggests that some predictor variables are perfectly correlated.** 
+
+
+## Model 1 (Baseline Model)
+```{r}
+model1 <- glm.nb(Hospitalizations ~ Age +  Cholesterol + Smoker + Diabetes, data = df)
+
+summary(model1)
+```
+
+## Model 2 (Expanded/Full Model)
+```{r}
+model2 <- glm.nb(Hospitalizations ~ Age +  Cholesterol + Smoker + Diabetes + Physical + BMI + Gender, data = df)
+
+summary(model2)
+
+#model 1 vs. model 2
+
+anova(model1,model2, test = "Chisq")
+BIC(model1, model2)
+```
+
+
+Model 2 is more favorable. It has a lower AIC and BIC value that Model 1. The Likelihood-Ratio (LR) test supports this. LR Formula:
+$$
+LR = -2 (L_{restricted\ model} - L_{full\ model})
+$$
+where L = log-likelihood, restricted model is Model1(baseline), and full model is model2(expanded with 3 extra predictors). <br>
+Here, for simplicity purposes, we just the difference between model2 and model1:
+$$
+LR = (4080.609 \ - \  3661.886) = 418.7
+$$
+This simple LR value measures how much better model2 fits compared to model1. The test statistic LR follows approximately a Chi-squared distribution with a df=3 under the Null Hypothesis:"model1 is sufficient, or the extra predictors have not significance $\beta_5=\beta_6=\beta_7=0$".Since the (p-value=0)<($\alpha = 0.05$), then this means the probability of seeing such a large improvement just by chance under the NUll is zero. Therefore, the NUll is rejected, and we accept that the additional predictors Physical, BMI, and Gender are ***COLLECTIVELY*** significant to predicting an individual's number of hospitalizations and explaining the power of Model 2.
+
+## Identify Key Interaction Terms (Model 3)
+
+These interactions have a statistically significant impact on hospitalizations and should be kept in the model:
+
+***Cholesterol:SmokerYes*** (p = 0.0181): The effect of cholesterol on hospitalizations is different for smokers compared to non-smokers.
+
+***Cholesterol:DiabetesYes*** (p = 0.0472): The impact of cholesterol on hospitalizations changes depending on diabetes status.
+
+***BMI:GenderMale*** (p = 0.0017): The effect of BMI on hospitalizations differs for males vs. females.
+
+
+These interactions may have an impact but are not strongly significant:
+
+***PhysicalYes*** (p = 0.414739): Keeping it in the model because it is significant in our initial model.
+
+***Cholesterol:BMI*** (p = 0.0879): Cholesterol’s effect on hospitalizations may depend on BMI.
+
+***PhysicalYes:BMI*** (p = 0.0926): The relationship between physical activity and BMI might affect hospitalizations.
+
+Consider keeping these for further investigation.
+
+## Model 4 (Reduced Interaction Model 3)
+```{r}
+model4 <- glm.nb(Hospitalizations ~ Age + Cholesterol + Smoker + Diabetes + 
+    Physical + BMI + Gender + Cholesterol:Smoker + Cholesterol:Diabetes + 
+    Cholesterol:BMI + Physical:BMI + BMI:Gender, 
+    data = df)
+
+summary(model4)
+
+BIC(model4)
+```
+
+Significant Interactions:
+
+***Cholesterol:DiabetesYes*** (p = 0.0207, β = -0.0014)
+
+***BMI:GenderMale*** (p = 0.0076, β = -0.0094)
+
+***Cholesterol:BMI*** (p= 0.0659): Showing a better performance, keep for further exploration.
+
+***Cholesterol:Smoker*** (p= 0.054): A decrease in performance, but still keeping because of their historical relation and further exploration.
+
+***PhysicalYes:BMI*** (p = 0.1732): No longer statistically significant and can be removed.
+
+
+## Model 5 (Reduced Model 4)
+```{r}
+model5 <- glm.nb(Hospitalizations ~ Age + Cholesterol + Smoker + Diabetes + 
+    Physical + BMI + Gender + Cholesterol:Smoker + Cholesterol:Diabetes + 
+    Cholesterol:BMI + BMI:Gender, 
+    data = df)
+
+summary(model5)
+
+BIC(model4, model5)
+```
+
+Remove Cholesterol:SmokerYes (p = 0.05745) and Cholesterol:BMI (p = 0.08692) to evaluate whether the model achieves better performance.
+
+## Model 6 (Reduced Model 5)
+```{r}
+model6 <- glm.nb(Hospitalizations ~ Age + Cholesterol + Smoker + Diabetes + 
+                   Physical + BMI + Gender + Cholesterol:Diabetes + 
+                   BMI:Gender, 
+                 data = df)
+
+summary(model6)
+```
+
+**All terms are significant**
+
+## Likelihood Ratio Test and BIC (Model 5 vs Model 6)
+```{r}
+# H0: The reduced model(refitted_reduced_model3) fits the data as well as the full model(refitted_reduced_model2) 
+# Ha: The full model(refitted_reduced_model2) provides a significantly better fit 
+
+AIC(model5, model6)
+BIC(model5, model6)
+anova(model5, model6, test = "Chisq")
+```
+
+This is a close one! The Likelihood Ratio Test shows (p-value-0.048) < ($\alpha$=0.05), we reject the $H_0:$"Model 6 is sufficient" and conclude that the extra interaction terms from Model 5 are meaningful to an individual's hospitalization rate. Model 5's AIC is just slightly less than Model 6's AIC - favoring Model 5. However, Model 6's BIC is also less than Model 5's BIC - favoring Model 6. <br>
+
+
+
+# Check Multicollinearity
+```{r}
+vif(model6)
+```
+
+The VIF values indicate severe multicollinearity in: 
+
+Diabetes (VIF = 33.881220)
+
+Gender (VIF = 24.921487)
+
+Cholesterol:Diabetes (VIF = 34.998056)
+
+BMI:Gender (VIF = 25.820375)
+
+## Center Continuous Predictors
+***Centering*** is used to help reduce multicolinearity between main effects and interaction terms, and to make coefficients easier to interpret. The main effect now represents the effect at the average of the other variable.
+```{r}
+df$Cholesterol_centered <- scale(df$Cholesterol, center = TRUE, scale = FALSE)
+df$BMI_centered <- scale(df$BMI, center = TRUE, scale = FALSE)
+# "center = TRUE" - subtracts the mean from all cholesterol values
+# "scale = FALSE" - does not divide by the standard deviation
+
+# Refit the model with centered variables
+# Model 5
+refitted_Model5 <- glm.nb(Hospitalizations ~ Age + Cholesterol_centered + Smoker + Diabetes + 
+                            Physical + BMI_centered + Gender + Cholesterol_centered:Smoker + 
+                            Cholesterol_centered:Diabetes + Cholesterol_centered:BMI_centered + 
+                            BMI_centered:Gender, 
+                          data = df)
+vif(refitted_Model5)
+
+# Model 6
+refitted_Model6 <- glm.nb(Hospitalizations ~ Age + Cholesterol_centered + Smoker + Diabetes + 
+                            Physical + BMI_centered + Gender + Cholesterol_centered:Diabetes + 
+                            BMI_centered:Gender, 
+                          data = df)
+vif(refitted_Model6)
+```
+**Multicollinearity is resolved, the centering strategy worked exceptionally well here.**
+
+## Visualizing Interaction Effects
+
+```{r}
+#Interaction Plot for Cholesterol & Smoker
+interact_plot(refitted_Model6, pred = "Cholesterol_centered", modx = "Smoker", 
+              plot.points = TRUE, interval = TRUE) +
+  ggtitle("Interaction: Cholesterol & Smoker")
+```
+
+Orange (Smoker = Yes) and Blue (Smoker = No) lines diverge as cholesterol increases.
+
+The effect of cholesterol on hospitalizations is stronger for smokers.
+
+Smokers show higher hospitalization rates at high cholesterol levels.
+
+Interpretation:
+Smokers experience a greater hospitalization rates as cholesterol rises compared to non-smokers.
+
+```{r}
+#Interaction Plot for Cholesterol & Diabetes
+interact_plot(refitted_Model6, pred = "Cholesterol_centered", modx = "Diabetes", 
+              plot.points = TRUE, interval = TRUE) +
+  ggtitle("Interaction: Cholesterol & Diabetes")
+```
+
+Orange (Diabetes = Yes) line is consistently above the blue (Diabetes = No) line.
+
+Diabetics have higher hospitalization rates across all cholesterol levels.
+
+The effect of cholesterol on hospitalization risk appears stronger for diabetics.
+
+Interpretation:
+Diabetics are more affected by high cholesterol, experiencing a higher increase in hospitalizations as cholesterol rises.
+
+```{r}
+#Interaction Plot for Cholesterol & BMI
+interact_plot(refitted_Model6, pred = "Cholesterol_centered", modx = "BMI_centered", 
+              plot.points = TRUE, interval = TRUE) +
+  ggtitle("Interaction: Cholesterol & BMI")
+```
+
+Three lines represent low BMI (-1 SD), mean BMI, and high BMI (+1 SD).
+
+Steeper slope for high BMI suggests that the effect of cholesterol on hospitalizations is stronger at higher BMI 
+levels.
+
+Patients with higher BMI levels have higher hospitalization rates for the same cholesterol level.
+
+Interpretation:
+Cholesterol's impact on hospitalization increases with BMI which means high BMI individuals are more vulnerable to cholesterol-related hospitalizations.
+
+```{r}
+#Interaction Plot for BMI & Gender
+interact_plot(refitted_Model6, pred = "BMI_centered", modx = "Gender", 
+              plot.points = TRUE, interval = TRUE) +
+  ggtitle("Interaction: BMI & Gender")
+```
+
+Orange (Male) and Blue (Female) lines are nearly parallel.
+
+Slightly higher hospitalization rates for males.
+
+BMI seems to have a small effect on hospitalization, as the slope is nearly flat.
+
+Interpretation:
+The effect of BMI on hospitalizations is similar for both genders, though males tend to have slightly higher hospitalization rates overall.
+
+# Residual Analysis
+```{r}
+# Get deviance residuals
+df$residuals <- residuals(refitted_Model6, type = "deviance")
+
+ggplot(df, aes(x = residuals)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.7, color = "black") +
+  stat_density(geom = "line", color = "red", size = 1, bw = 0.5) + 
+  labs(title = "Density of Residuals", x = "Residuals", y = "Density")
+
+
+# Get fitted values
+df$fitted_values <- fitted(refitted_Model6)
+
+ggplot(df, aes(x = fitted_values, y = residuals)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Residuals vs. Fitted Values", x = "Fitted Values", y = "Residuals")
+```
+
+Residuals follow a Negative Binomial distribution, as we would expect due to th response variable. 
+
+## Check Linearity
+```{r}
+# Age vs Pearson Residuals
+refitted_age <- ggplot(df, aes(x = Age, y = residuals(refitted_Model6, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Figure 7", x = "Age", y = "Pearson Residuals") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12))
+
+# Cholesterol vs Pearson Residuals
+refitted_cholesterol <- ggplot(df, aes(x = Cholesterol, y = residuals(refitted_Model6, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Figure 8", x = "Cholesterol", y = "Pearson Residuals") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12))
+
+# BMI vs Pearson Residuals
+refitted_bmi <- ggplot(df, aes(x = BMI, y = residuals(refitted_Model6, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Figure 9", x = "BMI", y = "Pearson Residuals") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12))
+
+grid.arrange(refitted_age, refitted_cholesterol, refitted_bmi, ncol = 2)
+```
+
+## Global Wald Test
+```{r}
+wald.test (b = coef(refitted_Model6), 
+           Sigma = vcov(refitted_Model6), 
+           Terms = 2:length(coef(refitted_Model6)))
+```
+
+# Conclusion
+The Likelihood Ratio Test and BIC indicates that the more complex model (Model 5) provides a statistically significant improvement in fit over the simpler model (Model 6). However, since the difference is relatively small, and to prevent overfitting, we select Model 6 as our 
+$$
+\text{Model 6: }log(\mu) = \beta_0 + \beta_1x_1 + \beta_2x_2 + \beta_3x_3 + \beta_4x_4 + \beta_5x_5 + \beta_6x_6 + \beta_7x_7 + \beta_8x_2x_4 + \beta_9x_6x_7
+$$
+```{r}
+summary(refitted_Model6)
+```
+
+```{r}
+exp(refitted_Model6$coefficients)
+```
+
+```{r}
+# Packages
+library(broom)
+library(dplyr)
+
+m <- refitted_Model6  # your centered Model 6
+
+crit <- qnorm(0.975)
+
+irr_tbl <- tidy(m) %>%                       # estimate, std.error, statistic, p.value
+  filter(term != "(Intercept)") %>%
+  mutate(
+    IRR      = exp(estimate),
+    IRR_low  = exp(estimate - crit * std.error),
+    IRR_high = exp(estimate + crit * std.error)
+  ) %>%
+  mutate(
+    term = dplyr::recode(term,
+      "Age"                                 = "Age (per year)",
+      "Cholesterol_centered"                = "Cholesterol (per unit, centered)",
+      "SmokerYes"                           = "Smoker (Yes vs No)",
+      "DiabetesYes"                         = "Diabetes (Yes vs No)",
+      "PhysicalYes"                         = "Physical Activity (Yes vs No)",
+      "BMI_centered"                        = "BMI (per unit, centered)",
+      "GenderMale"                          = "Gender (Male vs Female)",
+      "Cholesterol_centered:DiabetesYes"    = "Cholesterol × Diabetes",
+      "BMI_centered:GenderMale"             = "BMI × Gender"
+    )
+  ) %>%
+  select(Predictor = term,
+         IRR,
+         `95% CI Low`  = IRR_low,
+         `95% CI High` = IRR_high,
+         `p-value`     = p.value) %>%
+  mutate(
+    across(where(is.numeric), ~round(., 3))
+  )
+
+irr_tbl
+
+```
+
+```{r}
+library(MASS)
+
+ci_prof <- confint(m)  # may take a bit (profiling)
+coefs   <- coef(m)
+
+irr_prof <- tibble::tibble(
+  term = names(coefs),
+  IRR  = exp(coefs),
+  low  = exp(ci_prof[,1]),
+  high = exp(ci_prof[,2])
+) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = dplyr::recode(term,
+      "Age"                                 = "Age (per year)",
+      "Cholesterol_centered"                = "Cholesterol (per unit, centered)",
+      "SmokerYes"                           = "Smoker (Yes vs No)",
+      "DiabetesYes"                         = "Diabetes (Yes vs No)",
+      "PhysicalYes"                         = "Physical Activity (Yes vs No)",
+      "BMI_centered"                        = "BMI (per unit, centered)",
+      "GenderMale"                          = "Gender (Male vs Female)",
+      "Cholesterol_centered:DiabetesYes"    = "Cholesterol × Diabetes",
+      "BMI_centered:GenderMale"             = "BMI × Gender"
+    )
+  ) %>%
+  select(Predictor = term,
+         IRR,
+         `95% CI Low`  = low,
+         `95% CI High` = high) %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+irr_prof
+
+```
+
+
+```{r}
+# Simple pretty print
+library(knitr)
+kable(irr_tbl, align = c("l","r","r","r","r"), caption = "Model 6 (centered): IRRs with 95% Wald CIs")
+
+# Or export to .docx using flextable (install if needed)
+# install.packages(c("flextable","officer"))
+library(flextable); library(officer)
+
+ft <- flextable(irr_tbl) |>
+  align(part = "all", align = "left", j = 1) |>
+  align(part = "all", align = "right", j = 2:5) |>
+  autofit()
+
+print(ft, preview = "docx")                     # preview locally
+save_as_docx("Model 6 IRR Table" = ft,
+             path = "Model6_IRR_Table.docx")
+
+```
+
+
+# Analysis Roadmap
+This version incorporates our additional variable BMI_Cat for the model selection. In the end, it was discovered that the BIC score for our chosen final model (without utilizing BMI_Cat) was lower than the model we found using BMI_Cat. Thus, we did not use the following results. 
+
+## 1. Full Model (Poisson Distribution)
+```{r}
+full_model_pois <- glm(Hospitalizations ~ Age +  Cholesterol + Smoker + Diabetes + BMI_Cat + Physical + BMI + Gender + 
+                     Age:Cholesterol 
+                   + Age:Smoker
+                   + Age:Diabetes
+                   + Age:BMI_Cat
+                   + Age:Physical
+                   + Age:BMI
+                   + Age:Gender
+                   + Cholesterol:Smoker
+                   + Cholesterol:Diabetes
+                   + Cholesterol:BMI_Cat
+                   + Cholesterol:Physical
+                   + Cholesterol:BMI
+                   + Cholesterol:Gender
+                   + Smoker:Diabetes
+                   + Smoker:BMI_Cat
+                   + Smoker:Physical
+                   + Smoker:BMI
+                   + Smoker:Gender
+                   + Diabetes:BMI_Cat
+                   + Diabetes:Physical
+                   + Diabetes:BMI
+                   + Diabetes:Gender
+                   + BMI_Cat:Physical
+                   + BMI_Cat:BMI
+                   + BMI_Cat:Gender
+                   + Physical:BMI
+                   + Physical:Gender
+                   + BMI:Gender, family = poisson, data = df)
+summary(full_model_pois)
+```
+
+### Equidispersion 
+```{r}
+#H0: Dispersion = 1
+#Ha: Dispersion > 1
+#dispersiontest(full_model_pois, trafo = NULL, alternative = c("greater"))
+```
+In this dispersion test, the p-value of 5.779e^-15 was found to be less than 0.05, which infers statistical significance. This means that we can reject the null hypothesis and conclude that our dataset leads to overdispersion. Therefore, our dataset follows a Negative Binomial distribution better than a Poisson distribution.
+
+## 2. Main Effects (Switch to Negative Binomial Distribution)
+```{r}
+maineffects_nb <- glm.nb(Hospitalizations ~ Age +  Cholesterol + Smoker + Diabetes + BMI_Cat + Physical + BMI + Gender, data = df)
+summary(maineffects_nb)
+```
+
+### Multicollinearity Check
+```{r}
+vif(maineffects_nb)
+```
+The only multicollinearity issue was found between BMI and BMI_Cat due to their high correlation of using the same values. Therefore, we will choose to keep BMI_Cat and remove BMI since BMI_Cat was found to have a slight relation with Hospitalizations, which wasn't as evident with BMI. No multicollinearity issues was found between the other variables, so everything else will be kept in the model.
+
+## 3. Full Model (Negative Binomial Distribution)
+```{r}
+# This full model only includes BMI_Cat, BMI main effects was removed (BMI interactions kept)
+full_model_nb <- glm.nb(Hospitalizations ~ Age + Cholesterol + Smoker + Diabetes + BMI_Cat + Physical + Gender + 
+                     Age:Cholesterol 
+                   + Age:Smoker
+                   + Age:Diabetes
+                   + Age:BMI_Cat
+                   + Age:Physical
+                   + Age:BMI
+                   + Age:Gender
+                   + Cholesterol:Smoker
+                   + Cholesterol:Diabetes
+                   + Cholesterol:BMI_Cat
+                   + Cholesterol:Physical
+                   + Cholesterol:BMI
+                   + Cholesterol:Gender
+                   + Smoker:Diabetes
+                   + Smoker:BMI_Cat
+                   + Smoker:Physical
+                   + Smoker:BMI
+                   + Smoker:Gender
+                   + Diabetes:BMI_Cat
+                   + Diabetes:Physical
+                   + Diabetes:BMI
+                   + Diabetes:Gender
+                   + BMI_Cat:Physical
+                   + BMI_Cat:BMI
+                   + BMI_Cat:Gender
+                   + Physical:BMI
+                   + Physical:Gender
+                   + BMI:Gender, data = df)
+summary(full_model_nb)
+```
+
+### Linearity (for full_model_nb)
+```{r}
+# Age vs Pearson Residuals
+full_Age <- ggplot(df, aes(x = Age, y = residuals(full_model_nb, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Age vs. Pearson Residuals", x = "Age", y = "Pearson Residuals") +
+  theme_minimal()
+
+# Cholesterol vs Pearson Residuals
+full_Cholesterol <- ggplot(df, aes(x = Cholesterol, y = residuals(full_model_nb, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Cholesterol vs. Pearson Residuals", x = "Cholesterol", y = "Pearson Residuals") +
+  theme_minimal()
+
+grid.arrange(full_Age, full_Cholesterol, ncol = 1)
+```
+
+### Try adding Age^2 into full_model_nb
+```{r}
+Age_squared <- (df$Age)^2
+full_model_nb2 <- glm.nb(Hospitalizations ~ Age + Age_squared + Cholesterol + Smoker + Diabetes + BMI_Cat + Physical + Gender + 
+                     Age:Cholesterol 
+                   + Age:Smoker
+                   + Age:Diabetes
+                   + Age:BMI_Cat
+                   + Age:Physical
+                   + Age:BMI
+                   + Age:Gender
+                   + Cholesterol:Smoker
+                   + Cholesterol:Diabetes
+                   + Cholesterol:BMI_Cat
+                   + Cholesterol:Physical
+                   + Cholesterol:BMI
+                   + Cholesterol:Gender
+                   + Smoker:Diabetes
+                   + Smoker:BMI_Cat
+                   + Smoker:Physical
+                   + Smoker:BMI
+                   + Smoker:Gender
+                   + Diabetes:BMI_Cat
+                   + Diabetes:Physical
+                   + Diabetes:BMI
+                   + Diabetes:Gender
+                   + BMI_Cat:Physical
+                   + BMI_Cat:BMI
+                   + BMI_Cat:Gender
+                   + Physical:BMI
+                   + Physical:Gender
+                   + BMI:Gender, data = df)
+summary(full_model_nb2)
+```
+
+### Likelihood Ratio Test
+```{r}
+# H0: The reduced model(full_model_nb) fits the data as well as the full model(full_model_nb2) (Age_squared = 0)
+# Ha: The full model(full_model_nb2) provides a significantly better fit (Age_squared /= 0)
+
+Full.loglik1 <- logLik(full_model_nb2)
+Reduced.loglik1 <- logLik(full_model_nb)
+teststat1 <- 2 * (as.numeric(Reduced.loglik1) - as.numeric(Full.loglik1))
+teststat1
+p.val1 <- pchisq(teststat1, df = 1, lower.tail = FALSE)
+p.val1
+```
+In the Likelihood Ratio Test, since the p-value of 1 is greater than the significance level of 0.05, we will fail to reject the null hypothesis and conclude that the full_model_nb is preferred. This means that Age^2 can be eliminated from the model.
+
+### Linearity (for full_model_nb2)
+```{r}
+# Age^2 vs Pearson Residuals
+full_Age_squared <- ggplot(df, aes(x = Age_squared, y = residuals(full_model_nb2, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Age^2 vs. Pearson Residuals", x = "Age^2", y = "Pearson Residuals") +
+  theme_minimal()
+
+# Cholesterol vs Pearson Residuals
+full_Cholesterol2 <- ggplot(df, aes(x = Cholesterol, y = residuals(full_model_nb2, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Cholesterol vs. Pearson Residuals", x = "Cholesterol", y = "Pearson Residuals") +
+  theme_minimal()
+
+grid.arrange(full_Age_squared, full_Cholesterol2, ncol = 1)
+```
+
+### Global Wald Test
+```{r}
+# H0: Beta = 0
+# Ha: At least one of the Beta coefficients are different from zero
+
+maineffects_model_nb2 <- glm.nb(Hospitalizations ~ Age + Age_squared + Cholesterol + Smoker + Diabetes + BMI_Cat + Physical + Gender, data = df)
+
+wald.test (b = coef(maineffects_model_nb2), 
+           Sigma = vcov(maineffects_model_nb2), 
+           Terms = 2:length(coef(maineffects_model_nb2)))
+
+# NOTE: Was unable to run the Global Wald Test using the full_model_nb2, only worked with the main effects
+```
+After running the global Wald Test, the p-value was found to be approximately 0.0, which is less than the significance level of 0.05. This implies that we can reject the null hypothesis and conclude that at least one useful predictor exists in the model.
+
+## 4. Fit new model from step 3
+```{r}
+newfull_nb <- glm.nb(Hospitalizations ~ Age + Cholesterol + Smoker + Diabetes + BMI_Cat + Physical + Gender + 
+                   + Smoker:Physical
+                   + Diabetes:BMI_Cat
+                   + Diabetes:BMI
+                   + BMI_Cat:Gender
+                   , data = df)
+summary(newfull_nb)
+```
+
+### Linearity (for newfull_nb)
+```{r}
+# Age vs Pearson Residuals
+newfull_Age2 <- ggplot(df, aes(x = Age, y = residuals(newfull_nb, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Age vs. Pearson Residuals", x = "Age", y = "Pearson Residuals") +
+  theme_minimal()
+
+# Cholesterol vs Pearson Residuals
+newfull_Cholesterol2 <- ggplot(df, aes(x = Cholesterol, y = residuals(newfull_nb, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Cholesterol vs. Pearson Residuals", x = "Cholesterol", y = "Pearson Residuals") +
+  theme_minimal()
+
+grid.arrange(newfull_Age2, newfull_Cholesterol2, ncol = 1)
+```
+
+### Global Wald Test
+```{r}
+wald.test (b = coef(newfull_nb), 
+           Sigma = vcov(newfull_nb), 
+           Terms = 2:length(coef(newfull_nb)))
+```
+After running the global Wald Test, the p-value was found to be approximately 0.0, which is less than the significance level of 0.05. This implies that we can reject the null hypothesis and conclude that at least one useful predictor exists in the model.
+
+### Check for any other predictors we can remove to further improve the model (lower AIC/BIC, perform likelihood ratio test, etc.)
+Try to see if using Age^3 or log(Age) could help improve our model and the linearity assumption
+
+### Try adding Age^3 into full_model_nb 
+```{r}
+Age_cubed <- (df$Age)^3
+full_model_nb3 <- glm.nb(Hospitalizations ~ Age + Age_cubed + Cholesterol + Smoker + Diabetes + BMI_Cat + Physical + Gender + 
+                     Age:Cholesterol 
+                   + Age:Smoker
+                   + Age:Diabetes
+                   + Age:BMI_Cat
+                   + Age:Physical
+                   + Age:BMI
+                   + Age:Gender 
+                   + Cholesterol:Smoker
+                   + Cholesterol:Diabetes
+                   + Cholesterol:BMI_Cat
+                   + Cholesterol:Physical
+                   + Cholesterol:BMI
+                   + Cholesterol:Gender
+                   + Smoker:Diabetes
+                   + Smoker:BMI_Cat
+                   + Smoker:Physical
+                   + Smoker:BMI
+                   + Smoker:Gender
+                   + Diabetes:BMI_Cat
+                   + Diabetes:Physical
+                   + Diabetes:BMI
+                   + Diabetes:Gender
+                   + BMI_Cat:Physical
+                   + BMI_Cat:BMI
+                   + BMI_Cat:Gender
+                   + Physical:BMI
+                   + Physical:Gender
+                   + BMI:Gender, data = df)
+summary(full_model_nb3)
+```
+
+### Linearity (for full_model_nb3)
+```{r}
+# Age^3 vs Pearson Residuals
+newfull_Age_cubed <- ggplot(df, aes(x = Age_cubed, y = residuals(full_model_nb3, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Age^3 vs. Pearson Residuals", x = "Age^3", y = "Pearson Residuals") +
+  theme_minimal()
+
+# Cholesterol vs Pearson Residuals
+newfull_Cholesterol3 <- ggplot(df, aes(x = Cholesterol, y = residuals(full_model_nb3, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Cholesterol vs. Pearson Residuals", x = "Cholesterol", y = "Pearson Residuals") +
+  theme_minimal()
+
+grid.arrange(newfull_Age_cubed, newfull_Cholesterol3, ncol = 1)
+```
+
+## 5. Try adding log(Age) into full_model_nb 
+```{r}
+log_Age <- log(df$Age)
+full_model_nb4 <- glm.nb(Hospitalizations ~ Age + log_Age + Cholesterol + Smoker + Diabetes + BMI_Cat + Physical + Gender + 
+                     Age:Cholesterol 
+                   + Age:Smoker
+                   + Age:Diabetes
+                   + Age:BMI_Cat
+                   + Age:Physical
+                   + Age:BMI
+                   + Age:Gender
+                   + Cholesterol:Smoker
+                   + Cholesterol:Diabetes
+                   + Cholesterol:BMI_Cat
+                   + Cholesterol:Physical
+                   + Cholesterol:BMI
+                   + Cholesterol:Gender
+                   + Smoker:Diabetes
+                   + Smoker:BMI_Cat
+                   + Smoker:Physical
+                   + Smoker:BMI
+                   + Smoker:Gender
+                   + Diabetes:BMI_Cat
+                   + Diabetes:Physical
+                   + Diabetes:BMI
+                   + Diabetes:Gender
+                   + BMI_Cat:Physical
+                   + BMI_Cat:BMI
+                   + BMI_Cat:Gender
+                   + Physical:BMI
+                   + Physical:Gender
+                   + BMI:Gender, data = df)
+summary(full_model_nb4)
+```
+
+### Linearity (for full_model_nb4)
+```{r}
+# log(Age) vs Pearson Residuals
+newfull_log_Age <- ggplot(df, aes(x = log_Age, y = residuals(full_model_nb4, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "log(Age) vs. Pearson Residuals", x = "log(Age)", y = "Pearson Residuals") +
+  theme_minimal()
+
+# Cholesterol vs Pearson Residuals
+newfull_Cholesterol4 <- ggplot(df, aes(x = Cholesterol, y = residuals(full_model_nb4, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Cholesterol vs. Pearson Residuals", x = "Cholesterol", y = "Pearson Residuals") +
+  theme_minimal()
+
+grid.arrange(newfull_log_Age, newfull_Cholesterol4, ncol = 1)
+```
+
+### BIC 
+```{r}
+# Age^2 vs Age^3
+BIC(full_model_nb2, full_model_nb3) # full_model_nb3 is slightly better (lower BIC) = Age^3
+
+# Age^3 vs log(Age)
+BIC(full_model_nb3, full_model_nb4) # full_model_nb3 is still slightly better (lower BIC) = Age^2
+```
+BIC was used to compare the models as these are non-nested models. After running the test, only full_model_nb3 was found to have a slightly lower BIC score than both full_model_nb4 and full_model_nb2. 
+
+### Likelihood Ratio Test
+```{r}
+# H0: The reduced model fits the data as well as the full model (Age_squared = 0)
+# Ha: The full model provides a significantly better fit (Age_squared /= 0)
+
+Full.loglik2 <- logLik(full_model_nb3)
+Reduced.loglik2 <- logLik(full_model_nb)
+teststat2 <- 2 * (as.numeric(Reduced.loglik2) - as.numeric(Full.loglik2))
+teststat2
+p.val2 <- pchisq(teststat2, df = 1, lower.tail = FALSE)
+p.val2
+```
+
+## 6. Main effects + significant interactions 
+```{r}
+newfull_nb2 <- glm.nb(Hospitalizations ~ Age + Age_cubed + Cholesterol + Smoker + Diabetes + BMI_Cat + Physical + Gender + 
+                   + Smoker:Physical
+                   + Diabetes:BMI_Cat
+                   + Diabetes:BMI
+                   + BMI_Cat:Gender
+                   , data = df)
+summary(newfull_nb2)
+```
+
+### Linearity (for newfull_nb2)
+```{r}
+# Age^3 vs Pearson Residuals
+newfull_Age_cubed <- ggplot(df, aes(x = Age_cubed, y = residuals(newfull_nb2, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Age^3 vs. Pearson Residuals", x = "Age^3", y = "Pearson Residuals") +
+  theme_minimal()
+
+# Cholesterol vs Pearson Residuals
+newfull_Cholesterol3 <- ggplot(df, aes(x = Cholesterol, y = residuals(newfull_nb2, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Cholesterol vs. Pearson Residuals", x = "Cholesterol", y = "Pearson Residuals") +
+  theme_minimal()
+
+grid.arrange(newfull_Age_cubed, newfull_Cholesterol3, ncol = 1)
+```
+
+### Global Wald Test
+```{r}
+wald.test (b = coef(newfull_nb2), 
+           Sigma = vcov(newfull_nb2), 
+           Terms = 2:length(coef(newfull_nb2)))
+```
+### BIC
+```{r}
+BIC(newfull_nb, newfull_nb2)
+```
+
+### 6. Eliminate insignificant main effects
+```{r}
+new_maineffects_nb <- glm.nb(Hospitalizations ~ Age + Cholesterol + Smoker + Physical
+                   + Smoker:Physical
+                   + Diabetes:BMI_Cat
+                   + Diabetes:BMI
+                   + BMI_Cat:Gender
+                   , data = df)
+summary(new_maineffects_nb)
+
+# B_1 = Age, B_2 = Cholesterol, B_3 = Smoker, B_4 = Diabetes, B_5 = BMI_Cat, B_6 = Physical, B_7 = Gender
+```
+
+### Likelihood Ratio Test (newfull_nb vs new_maineffects_nb)
+```{r}
+# H0: The reduced model(new_maineffects_nb) fits the data as well as the full model(newfull_nb) (B_5 = B_6 = B_8 = 0)
+# Ha: The full model(newfull_nb) provides a significantly better fit (At least one of the Beta coefficients are different from zero)
+
+Full.loglik3 <- logLik(newfull_nb)
+Reduced.loglik3 <- logLik(new_maineffects_nb)
+teststat3 <- 2 * (as.numeric(Reduced.loglik3) - as.numeric(Full.loglik3))
+teststat3
+p.val3 <- pchisq(teststat3, df = 1, lower.tail = FALSE)
+p.val3
+```
+
+### Linearity (for new_maineffects_nb)
+```{r}
+# Age vs Pearson Residuals
+newfull_Age3 <- ggplot(df, aes(x = Age, y = residuals(new_maineffects_nb, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Age vs. Pearson Residuals", x = "Age", y = "Pearson Residuals") +
+  theme_minimal()
+
+# Cholesterol vs Pearson Residuals
+newfull_Cholesterol4 <- ggplot(df, aes(x = Cholesterol, y = residuals(new_maineffects_nb, type = "pearson"))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs (title = "Cholesterol vs. Pearson Residuals", x = "Cholesterol", y = "Pearson Residuals") +
+  theme_minimal()
+
+grid.arrange(newfull_Age3, newfull_Cholesterol4, ncol = 1)
+```
+
+### Global Wald Test
+```{r}
+maineffects_model_nb3 <- glm.nb(Hospitalizations ~ Age + Cholesterol + Smoker + Physical, data = df)
+
+wald.test (b = coef(maineffects_model_nb3), 
+           Sigma = vcov(maineffects_model_nb3), 
+           Terms = 2:length(coef(maineffects_model_nb3)))
+
+# NOTE: Not sure why I was unable to run the Global Wald Test on new_maineffects_nb but instead only worked after removing all of the interaction terms and created maineffects_model_nb3!!
+# wald.test (b = coef(new_maineffects_nb), 
+#            Sigma = vcov(new_maineffects_nb), 
+#            Terms = 2:length(coef(new_maineffects_nb)))
+```
+
+## Final Model (check for insignificant main effects to remove)
+```{r}
+# Likelihood Ratio Test
+# H0: The reduced model(new_maineffects_nb) fits the data as well as the full model(full_model_nb) 
+# Ha: The full model(full_model_nb) provides a significantly better fit 
+
+Full.loglik4 <- logLik(full_model_nb)
+Reduced.loglik4 <- logLik(new_maineffects_nb)
+teststat4 <- 2 * (as.numeric(Reduced.loglik4) - as.numeric(Full.loglik4))
+teststat4
+p.val4 <- pchisq(teststat4, df = 1, lower.tail = FALSE)
+p.val4
+
+BIC(full_model_nb, new_maineffects_nb) # Additional confirmation to check that new_maineffects_nb is the better model (has a lower BIC score)
+```
+In the Likelihood Ratio Test, since the p-value of 1 is greater than the significance level of 0.05, we will fail to reject the null hypothesis and conclude that the new_maineffects_nb is still preferred.
+
+```{r}
+new_maineffects_nb2 <- glm.nb(Hospitalizations ~ Age + Cholesterol + Smoker + Physical
+                   + Smoker:Physical
+                   + Diabetes:BMI
+                   , data = df)
+summary(new_maineffects_nb2)
+
+BIC(new_maineffects_nb, new_maineffects_nb2)
+
+# B_1 = Age, B_2 = Cholesterol, B_3 = Smoker, B_4 = Diabetes, B_5 = BMI_Cat, B_6 = Physical, B_7 = Gender
+```
+
+
+```{r}
+# Removed Smoker:Physical (not significant)
+new_maineffects_nb3 <- glm.nb(Hospitalizations ~ Age + Cholesterol + Smoker + Physical
+                   + Diabetes:BMI
+                   , data = df)
+summary(new_maineffects_nb3)
+
+BIC(new_maineffects_nb2, new_maineffects_nb3)
+```
+
+# EXTRA Visualizations Used for EDA
+## Box Plots
+```{r}
+ggplot(df, aes(x = Gender, y = Hospitalizations, fill = Gender)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Male" = "cyan", "Female" = "#F1C40F")) + 
+  labs(title = "Hospitalizations vs Gender",
+       x = "Gender",
+       y = "Hospitalization Frequency")
+
+ggplot(df, aes(x = Smoker, y = Hospitalizations, fill = Smoker)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Hospitalizations vs Smoker",
+       x = "Smoker",
+       y = "Hospitalization Frequency")
+
+ggplot(df, aes(x = Physical, y = Hospitalizations, fill = Physical)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Hospitalizations vs Physically Active",
+       x = "Pysical Activity",
+       y = "Hospitalization Frequency")
+
+ggplot(df, aes(x = Diabetes, y = Hospitalizations, fill = Diabetes)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Hospitalizations vs Diabetes Status",
+       x = "Diabetes Status",
+       y = "Hospitalization Frequency")
+
+ggplot(df, aes(x = BMI_Cat, y = Hospitalizations, fill = BMI_Cat)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Underweight" = "cyan", 
+                               "Healthy" = "green", 
+                               "Overweight" = "orange", 
+                               "Mild Obesity" = "pink", 
+                               "Moderate Obesity" = "darkred", 
+                               "Severe Obesity" = "grey")) + #No subject is severely obese.
+  labs(title = "Hospitalizations vs BMI Categories",
+       x = "BMI Categories",
+       y = "Hospitalization Frequency")
+```
+
+```{r}
+df_rmvOutliers_physical <- 
+ggplot(df, aes(x = Physical, y = Hospitalizations, fill = Physical)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Hospitalizations vs Physically Active",
+       x = "Pysical Activity",
+       y = "Hospitalization Frequency")
+```
+
+
+```{r}
+ggplot(df, aes(x = Smoker, y = Age, fill = Smoker)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Age vs Smoker",
+       x = "Age",
+       y = "Age Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = Diabetes, y = Age, fill = Diabetes)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Age vs Diabetes",
+       x = "Diabetes",
+       y = "Age Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = BMI_Cat, y = Age, fill = BMI_Cat)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Underweight" = "#E74C3C", 
+                               "Healthy" = "green", 
+                               "Overweight" = "orange", 
+                               "Mild Obesity" = "pink", 
+                               "Moderate Obesity" = "darkred", 
+                               "Severe Obesity" = "grey")) + #No subject is severely obese.
+  labs(title = "Age vs BMI Categories",
+       x = "BMI Categories",
+       y = "Age Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = BMI_Cat, y = Cholesterol, fill = BMI_Cat)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Underweight" = "#E74C3C", 
+                               "Healthy" = "green", 
+                               "Overweight" = "orange", 
+                               "Mild Obesity" = "pink", 
+                               "Moderate Obesity" = "darkred", 
+                               "Severe Obesity" = "grey")) + #No subject is severely obese.
+  labs(title = "Cholesterol vs BMI Categories",
+       x = "BMI Categories",
+       y = "Cholesterol Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = BMI_Cat, y = Hospitalizations, fill = BMI_Cat)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Underweight" = "#E74C3C", 
+                               "Healthy" = "green", 
+                               "Overweight" = "orange", 
+                               "Mild Obesity" = "pink", 
+                               "Moderate Obesity" = "darkred", 
+                               "Severe Obesity" = "grey")) + #No subject is severely obese.
+  labs(title = "Hospitalizations vs BMI Categories",
+       x = "BMI Categories",
+       y = "Hospitalizations Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = BMI_Cat, y = Age, fill = BMI_Cat)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Underweight" = "#E74C3C", 
+                               "Healthy" = "green", 
+                               "Overweight" = "orange", 
+                               "Mild Obesity" = "pink", 
+                               "Moderate Obesity" = "darkred", 
+                               "Severe Obesity" = "grey")) + #No subject is severely obese.
+  labs(title = "Age vs BMI Categories",
+       x = "BMI Categories",
+       y = "Age Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = Diabetes, y = Cholesterol, fill = Diabetes)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "Cholesterol vs Diabetes",
+       x = "Diabetes",
+       y = "Cholesterol Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = Diabetes, y = BMI, fill = Diabetes)) +
+  geom_boxplot(outlier.color = "purple", outlier.shape = 19, outlier.size = 2) + 
+  scale_fill_manual(values = c("Yes" = "cyan", "No" = "#F1C40F")) + 
+  labs(title = "BMI vs Diabetes",
+       x = "Diabetes",
+       y = "BMI Frequency")
+```
+
+
+## Histograms/Bar Charts
+```{r}
+ggplot(df, aes(x = Gender, fill = Smoker)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Gender vs Smoker",
+       x = "Gender",
+       y = "Count",
+       fill = "Smoker Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Gender, fill = Physical)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Gender vs Physical",
+       x = "Gender",
+       y = "Count",
+       fill = "Physical Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Gender, fill = Diabetes)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Gender vs Diabetes",
+       x = "Gender",
+       y = "Count",
+       fill = "Diabetes Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Gender, fill = BMI_Cat)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Gender vs BMI Categories",
+       x = "Gender",
+       y = "Count",
+       fill = "BMI_Cat Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Smoker, fill = Gender)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Smoker vs Gender",
+       x = "Smoker",
+       y = "Count",
+       fill = "Gender Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Smoker, fill = Physical)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Smoker vs Physical",
+       x = "Smoker",
+       y = "Count",
+       fill = "Physical Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Smoker, fill = Diabetes)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Smoker vs Diabetes",
+       x = "Smoker",
+       y = "Count",
+       fill = "Diabetes Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Smoker, fill = BMI_Cat)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Smoker vs BMI Categories",
+       x = "Smoker",
+       y = "Count",
+       fill = "BMI_Cat Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Physical, fill = Gender)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Physical vs Gender",
+       x = "Physical",
+       y = "count",
+       fill = "Gender") +
+  theme_minimal()
+
+```
+
+```{r}
+ggplot(df, aes(x = Physical, fill = Smoker)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Physical vs Smoker",
+       x = "Physical",
+       y = "Count",
+       fill = "Smoker Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Physical, fill = Diabetes)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Physical vs Diabetes",
+       x = "Physical",
+       y = "Count",
+       fill = "Diabetes Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Physical, fill = BMI_Cat)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Physical vs BMI Categories",
+       x = "Physical",
+       y = "Count",
+       fill = "BMI_Cat Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Diabetes, fill = Gender)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Diabetes vs Gender",
+       x = "Diabetes",
+       y = "Count",
+       fill = "Gender Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Diabetes, fill = Smoker)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Diabetes vs Smoker",
+       x = "Diabetes",
+       y = "Count",
+       fill = "Smoker Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Diabetes, fill = Physical)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Diabetes vs Physical",
+       x = "Diabetes",
+       y = "Count",
+       fill = "Physical Status") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = BMI_Cat, fill = Diabetes)) +
+  geom_bar(position = "dodge") +
+  labs(title = "BMI_Cat vs Diabetes",
+       x = "BMI_Cat",
+       y = "Count",
+       fill = "Diabetes Status") +
+  theme_minimal()
+```
+
+#### Histograms
+```{r}
+ggplot(df, aes(x = Age)) +
+  geom_histogram(binwidth = 5, fill = "lightblue", color = "black") +
+  labs(title = "Age",
+       x = "Age",
+       y = "Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = BMI)) +
+  geom_histogram(fill = "lightblue", color = "black") +
+  labs(title = "BMI",
+       x = "BMI",
+       y = "Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = Hospitalizations)) +
+  geom_histogram(fill = "lightblue", color = "black") +
+  labs(title = "Hospitalizations",
+       x = "Hospitalizations",
+       y = "Frequency")
+```
+
+```{r}
+ggplot(df, aes(x = Cholesterol)) +
+  geom_histogram(fill = "lightblue", color = "black") +
+  labs(title = "Cholesterol",
+       x = "Cholesterol",
+       y = "Frequency")
+```
+
+
+```{r}
+ggplot(df, aes(x = Hospitalizations, fill = Gender)) +
+  geom_histogram(position = "stack", bins = 30, color = "black") +
+  labs(title = "Hospitalizations vs Gender",
+       x = "Hospitalizations",
+       y = "Frequency",
+       fill = "Gender") +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(df, aes(x = Hospitalizations, fill = Smoker)) +
+  geom_histogram(position = "stack", bins = 30, color = "black") +
+  labs(title = "Hospitalizations vs Smoker",
+       x = "Hospitalizations",
+       y = "Frequency",
+       fill = "Smoker") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Hospitalizations, fill = Physical)) +
+  geom_histogram(position = "stack", bins = 30, color = "black") +
+  labs(title = "Hospitalizations vs Physical Activities",
+       x = "Hospitalizations",
+       y = "Frequency",
+       fill = "Physical") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Hospitalizations, fill = Diabetes)) +
+  geom_histogram(position = "stack", bins = 30, color = "black") +
+  labs(title = "Hospitalizations vs Diabetes",
+       x = "Hospitalizations",
+       y = "Diabetes",
+       fill = "Diabetes") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Hospitalizations, fill = BMI_Cat)) +
+  geom_histogram(position = "stack", bins = 30, color = "black") +
+  labs(title = "Hospitalizations vs BMI_Cat",
+       x = "Hospitalizations",
+       y = "BMI_Cat",
+       fill = "BMI_Cat") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Age, fill = Gender)) +
+  geom_histogram(binwidth = 5, color = "black") +
+  labs(title = "Age vs Gender",
+       x = "Age",
+       y = "Frequency",
+       fill = "Gender") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Age, fill = Smoker)) +
+  geom_histogram(binwidth = 5, color = "black") +
+  labs(title = "Age vs Smoker",
+       x = "Age",
+       y = "Frequency",
+       fill = "Smoker") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Age, fill = Physical)) +
+  geom_histogram(binwidth = 5, color = "black") +
+  labs(title = "Age vs Physical",
+       x = "Age",
+       y = "Frequency",
+       fill = "Physical") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Age, fill = Diabetes)) +
+  geom_histogram(binwidth = 5, color = "black") +
+  labs(title = "Age vs Diabetes",
+       x = "Age",
+       y = "Frequency",
+       fill = "Diabetes") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Age, fill = BMI_Cat)) +
+  geom_histogram(binwidth = 5, color = "black") +
+  labs(title = "Age vs BMI_Cat",
+       x = "Age",
+       y = "Frequency",
+       fill = "BMI_Cat") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(df, aes(x = Cholesterol, fill = Diabetes)) +
+  geom_histogram(binwidth = 5, color = "black") +
+  labs(title = "Cholesterol vs Diabetes",
+       x = "Cholesterol",
+       y = "Frequency",
+       fill = "Diabetes") +
+  theme_minimal()
+```
+
+
