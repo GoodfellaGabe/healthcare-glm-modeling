@@ -5,6 +5,7 @@ Generalized Linear Model (GLM) analysis using Negative Binomial regression to pr
 
 **Author:** Gabriel Vasquez  
 Led a team of 4 researchers in STAT 171 (General Statistical Models) to investigate significant and non-significant predictors of hospitalization rates using CDC health data. Directed project planning by drafting timelines, delegating roles, and supporting teammates as needed. Personally conducted and interpreted all model diagnostics, model selection, exploratory data analysis, and variable selection, ultimately identifying the Negative Binomial model as the best fit for addressing overdispersion in hospitalization counts.
+
 ---
 
 ## 📌 Project Overview
