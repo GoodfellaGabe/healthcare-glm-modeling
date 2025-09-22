@@ -86,7 +86,7 @@ Such skills are directly transferable to graduate-level coursework and research 
 ## 📎 References
 - Hilbe, J. M. (2011). *Negative Binomial Regression*. Cambridge University Press.  
 - Agresti, A. (2015). *Foundations of Linear and Generalized Linear Models*. Wiley.  
-- R Packages: `MASS`, `car`, `ggplot2`.  'GGally', 'gridExtra', 'tidyverse', 'dplyr', 'corrplot', 'AER', 'ggplot2', 'interactions', 'aod' 
+- R Packages: `MASS`, `car`, `ggplot2`.  `GGally`, `gridExtra`, `tidyverse`, `dplyr`, `corrplot`, `AER`, `ggplot2`, `interactions`, `aod` 
 
 ---
 
