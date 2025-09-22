@@ -60,7 +60,7 @@ The analysis highlights how demographic, health, and lifestyle factors combine t
 ## 📂 Repository Contents
 - `GLM_Hospitalizations.Rmd` — R Markdown file with full analysis.  
 - `GLM_Hospitalizations.pdf` — Project report.
-- 
+
 ---
 
 ## 🛠️ Tools & Skills Demonstrated
