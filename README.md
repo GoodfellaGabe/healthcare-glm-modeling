@@ -59,10 +59,8 @@ The analysis highlights how demographic, health, and lifestyle factors combine t
 
 ## 📂 Repository Contents
 - `GLM_Hospitalizations.Rmd` — R Markdown file with full analysis.  
-- `GLM_Hospitalizations.pdf` — Project report.  
-- `scripts/` — Supporting R scripts for EDA, GLM fitting, diagnostics.  
-- `figures/` — Plots of model residuals, interaction effects, and fitted distributions.  
-
+- `GLM_Hospitalizations.pdf` — Project report.
+- 
 ---
 
 ## 🛠️ Tools & Skills Demonstrated
